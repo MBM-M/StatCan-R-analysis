@@ -1,0 +1,269 @@
+---
+title: "Canada's Economic Pulse"
+subtitle: "Are Canadians keeping up? Wages, Housing, and Employment (2014–2024)"
+author: "Muhammad"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: flatly
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width  = 10,
+  fig.height = 5.5
+)
+```
+
+> **Data sources:** Statistics Canada open data (tables 14-10-0023-01, 18-10-0005-01, 14-10-0064-01)  
+> **Before knitting:** make sure you've run `data/fetch_data.R` and `data/clean_data.R` first.
+
+---
+
+## Setup
+
+```{r libraries}
+library(dplyr)
+library(tidyr)
+library(readr)
+library(ggplot2)
+library(scales)
+library(forcats)
+
+PROC <- "processed/"
+
+wages_vs_cpi <- read_csv(paste0(PROC, "wages_vs_cpi.csv"),   show_col_types = FALSE)
+wages_annual <- read_csv(paste0(PROC, "wages_annual.csv"),   show_col_types = FALSE)
+cpi_annual   <- read_csv(paste0(PROC, "cpi_annual.csv"),     show_col_types = FALSE)
+emp_annual   <- read_csv(paste0(PROC, "employment_annual.csv"), show_col_types = FALSE)
+emp_monthly  <- read_csv(paste0(PROC, "employment_monthly.csv"), show_col_types = FALSE)
+
+# Shared theme for all charts
+theme_pulse <- function() {
+  theme_minimal(base_size = 13) +
+    theme(
+      plot.title    = element_text(face = "bold", size = 14),
+      plot.subtitle = element_text(colour = "grey40", size = 11),
+      legend.position = "bottom",
+      panel.grid.minor = element_blank()
+    )
+}
+
+message("Datasets loaded ✓")
+message(sprintf("  wages_vs_cpi:  %d x %d", nrow(wages_vs_cpi), ncol(wages_vs_cpi)))
+message(sprintf("  wages_annual:  %d x %d", nrow(wages_annual),  ncol(wages_annual)))
+message(sprintf("  cpi_annual:    %d x %d", nrow(cpi_annual),    ncol(cpi_annual)))
+message(sprintf("  emp_annual:    %d x %d", nrow(emp_annual),    ncol(emp_annual)))
+```
+
+---
+
+## 1. Quick Data Inspection
+
+```{r inspection}
+wages_vs_cpi %>% head(10)
+```
+
+```{r wage-summary}
+wages_annual %>%
+  group_by(year) %>%
+  summarise(
+    min  = min(avg_hourly_wage,  na.rm = TRUE),
+    mean = mean(avg_hourly_wage, na.rm = TRUE),
+    max  = max(avg_hourly_wage,  na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(across(min:max, ~ round(.x, 2)))
+```
+
+---
+
+## 2. Chart 1 — Wages vs. Shelter CPI (indexed to 2014 = 100)
+
+> **The core story:** If shelter costs rise faster than wages, Canadians are falling behind on housing affordability.
+
+```{r chart1-national}
+national <- wages_vs_cpi %>% filter(geo == "Canada")
+
+# Reshape to long format — the ggplot2 way
+national_long <- national %>%
+  select(year, wage_index, shelter_index, cpi_index) %>%
+  pivot_longer(
+    cols      = c(wage_index, shelter_index, cpi_index),
+    names_to  = "series",
+    values_to = "index_value"
+  ) %>%
+  mutate(series = recode(series,
+    wage_index    = "Avg Hourly Wage Index",
+    shelter_index = "Shelter CPI Index",
+    cpi_index     = "All-Items CPI Index"
+  ))
+
+ggplot(national_long, aes(x = year, y = index_value, colour = series, linetype = series)) +
+  geom_hline(yintercept = 100, colour = "grey60", linewidth = 0.4) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 2) +
+  scale_colour_manual(values = c(
+    "Avg Hourly Wage Index" = "#2196F3",
+    "Shelter CPI Index"    = "#F44336",
+    "All-Items CPI Index"  = "#FF9800"
+  )) +
+  scale_linetype_manual(values = c(
+    "Avg Hourly Wage Index" = "solid",
+    "Shelter CPI Index"    = "dashed",
+    "All-Items CPI Index"  = "dotted"
+  )) +
+  scale_x_continuous(breaks = seq(2014, 2024, 2)) +
+  labs(
+    title    = "Wages vs. Housing Costs in Canada (2014 = 100)",
+    subtitle = "Shelter CPI rising faster than wages signals declining affordability",
+    x        = "Year",
+    y        = "Index (2014 = 100)",
+    colour   = NULL,
+    linetype = NULL
+  ) +
+  theme_pulse()
+```
+
+```{r chart1-gap}
+row_2024 <- national %>% filter(year == 2024)
+gap      <- row_2024$shelter_index - row_2024$wage_index
+
+cat(sprintf(
+  "In 2024 (indexed to 2014 = 100):\n  Wage index:    %.1f\n  Shelter index: %.1f\n  Gap:           +%.1f points\n",
+  row_2024$wage_index, row_2024$shelter_index, gap
+))
+```
+
+---
+
+## 3. Chart 2 — Provincial Comparison: Wage Growth vs. Shelter CPI (2024)
+
+> Which provinces are hit hardest?
+
+```{r chart2-provincial}
+PROVINCES <- c(
+  "British Columbia", "Alberta", "Saskatchewan", "Manitoba",
+  "Ontario", "Quebec", "New Brunswick", "Nova Scotia",
+  "Prince Edward Island", "Newfoundland and Labrador"
+)
+
+prov_2024 <- wages_vs_cpi %>%
+  filter(year == 2024, geo %in% PROVINCES) %>%
+  mutate(
+    affordability_gap = shelter_index - wage_index,
+    geo = fct_reorder(geo, affordability_gap)   # order bars by gap
+  )
+
+# Long format for grouped bars
+prov_long <- prov_2024 %>%
+  select(geo, wage_index, shelter_index) %>%
+  pivot_longer(
+    cols      = c(wage_index, shelter_index),
+    names_to  = "series",
+    values_to = "index_value"
+  ) %>%
+  mutate(series = recode(series,
+    wage_index    = "Wage Index (2024)",
+    shelter_index = "Shelter CPI Index (2024)"
+  ))
+
+ggplot(prov_long, aes(x = index_value, y = geo, fill = series)) +
+  geom_col(position = "identity", alpha = 0.75, width = 0.6) +
+  scale_fill_manual(values = c(
+    "Wage Index (2024)"          = "#2196F3",
+    "Shelter CPI Index (2024)"   = "#F44336"
+  )) +
+  labs(
+    title    = "Wage Growth vs. Shelter Cost Growth by Province (2024, indexed to 2014 = 100)",
+    subtitle = "Provinces where the red bar exceeds the blue bar have a housing affordability gap",
+    x        = "Index (2014 = 100)",
+    y        = NULL,
+    fill     = NULL
+  ) +
+  theme_pulse()
+```
+
+```{r chart2-table}
+prov_2024 %>%
+  arrange(desc(affordability_gap)) %>%
+  select(Province = geo, `Wage Index` = wage_index,
+         `Shelter Index` = shelter_index, `Gap` = affordability_gap) %>%
+  mutate(across(where(is.numeric), ~ round(.x, 1)))
+```
+
+---
+
+## 4. Chart 3 — Employment by Industry Over Time
+
+> Which sectors have grown or shrunk since 2014?
+
+```{r chart3-employment}
+# Top 8 industries by 2019 (pre-COVID) employment
+top_industries <- emp_annual %>%
+  filter(year == 2019) %>%
+  slice_max(avg_employed_thousands, n = 8) %>%
+  pull(industry)
+
+emp_top <- emp_annual %>%
+  filter(industry %in% top_industries) %>%
+  mutate(industry = stringr::str_wrap(industry, width = 35))   # wrap long labels
+
+ggplot(emp_top, aes(x = year, y = avg_employed_thousands, colour = industry)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 1.5) +
+  geom_vline(xintercept = 2020, linetype = "dashed",
+             colour = "red", alpha = 0.6) +
+  annotate("text", x = 2020.15, y = Inf, label = "COVID-19",
+           hjust = 0, vjust = 1.5, colour = "red", size = 3.5) +
+  scale_x_continuous(breaks = seq(2014, 2024, 2)) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title    = "Employment by Industry in Canada (2014–2024)",
+    subtitle = "Average employed workers (thousands)",
+    x        = "Year",
+    y        = "Avg Employed (thousands)",
+    colour   = NULL
+  ) +
+  theme_pulse() +
+  theme(legend.text = element_text(size = 9))
+```
+
+```{r chart3-recovery}
+pre_covid  <- emp_annual %>% filter(year == 2019) %>%
+  select(industry, emp_2019 = avg_employed_thousands)
+
+post_covid <- emp_annual %>% filter(year == 2024) %>%
+  select(industry, emp_2024 = avg_employed_thousands)
+
+recovery <- pre_covid %>%
+  inner_join(post_covid, by = "industry") %>%
+  mutate(pct_change = (emp_2024 - emp_2019) / emp_2019 * 100) %>%
+  arrange(desc(pct_change))
+
+cat("Employment change 2019 → 2024 (%):\n")
+recovery %>%
+  mutate(pct_change = round(pct_change, 1)) %>%
+  select(Industry = industry, `Change (%)` = pct_change) %>%
+  print(n = Inf)
+```
+
+---
+
+## 5. Summary of Findings
+
+- **Finding 1:** Nationally, wage growth marginally outpaced shelter cost growth by 2024 — the wage index reached 139.8 vs. a shelter index of 137.9 (both indexed to 2014 = 100). However, this national average masks significant regional disparities.
+
+- **Finding 2:** The provinces with the largest housing affordability gaps (shelter CPI rising faster than wages) were **Manitoba** (+10.6 index points), **Alberta** (+9.7), and **Saskatchewan** (+5.0). By contrast, British Columbia, Quebec, and Prince Edward Island saw wage growth outpace shelter costs — suggesting stronger labour market gains relative to local housing inflation.
+
+- **Finding 3:** The industries with the strongest employment growth from 2019 to 2024 were **Professional, Scientific and Technical Services** (+27.0%), **Public Administration** (+24.8%), and **Finance and Insurance** (+19.3%) — reflecting a structural shift toward knowledge-economy and government jobs post-pandemic.
+
+- **Finding 4:** Industries still below 2019 employment levels by 2024 include **Agriculture** (-21.1%), **Business, Building and Other Support Services** (-7.2%), and **Accommodation and Food Services** (-6.5%) — sectors hardest hit by COVID-19 that have not fully recovered.
+
+- **Overall:** While Canada's national wage growth kept pace with shelter costs on average, the regional picture is uneven. Prairie provinces face the steepest affordability pressures, and lower-wage service sectors have yet to recover pre-pandemic employment levels — compounding financial strain for households already facing elevated housing costs.
